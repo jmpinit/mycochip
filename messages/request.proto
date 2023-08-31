@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package mycochip.request;
+
+enum CommandType {
+    LIST = 0;
+    LOGS = 1;
+    // ...
+}
+
+message ListArgs {
+    string machine_id = 1;
+}
+
+message LogsArgs {
+    string machine_id = 1;
+}
+
+message Request {
+    CommandType command_type = 1;
+
+    oneof args {
+        ListArgs list_args = 2;
+        LogsArgs logs_args = 3;
+        // ...
+    }
+}
+

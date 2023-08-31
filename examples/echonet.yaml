@@ -1,0 +1,14 @@
+# transmitter device says "hello world" over and over again on the main channel
+# echoer device echoes everything it receives on the main channel to the trace channel
+devices:
+  transmitter:
+    mcu: atmega328p
+    firmware: examples/uart_hello_world/build/uart_hello_world.elf
+    channels:
+      - main
+  echoer:
+    mcu: atmega328p
+    firmware: examples/echo/build/echo.elf
+    channels:
+      - main
+      - trace

@@ -1,0 +1,7 @@
+devices:
+  server:
+    mcu: atmega328p
+    firmware: examples/http_hello/build/http_hello.elf
+    channels:
+      - tcp
+      - trace
