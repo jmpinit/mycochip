@@ -7,6 +7,7 @@
 //!
 //! See: [`AvrSimulator::new()`].
 
+pub(crate) mod state;
 mod adc;
 mod avr;
 mod duration;
@@ -15,14 +16,12 @@ mod ioctl;
 mod logging;
 mod port;
 mod spi;
-mod state;
 mod uart;
 
 use self::{adc::*, avr::*, firmware::*, port::*, spi::*, uart::*};
 use std::{collections::HashMap, path::Path};
 
 pub use self::{duration::*, state::*};
-pub use simavr_ffi as ffi;
 
 /// Bare-bones wrapper for simavr.
 #[derive(Debug)]

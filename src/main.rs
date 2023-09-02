@@ -1,3 +1,4 @@
+use std::time::Instant;
 use std::{io, thread};
 use std::io::{Write};
 use std::collections::{HashMap};
@@ -7,9 +8,10 @@ use crate::server_node::ServerNode;
 mod cli;
 mod config;
 mod comms;
-mod avr_simulator;
+pub mod avr_simulator;
 mod network;
 mod server_node;
+mod avr_net;
 
 fn cmd_rx(channel_name: &str) {
     let context = zmq::Context::new();
@@ -53,7 +55,7 @@ fn cmd_up(config_file_path: &str) {
     for (device_name, device) in &config.devices {
         let avr = avr_simulator::AvrSimulator::new(
             &device.mcu,
-            1000000,
+            u32::MAX,
             &device.firmware,
         );
 
@@ -67,7 +69,9 @@ fn cmd_up(config_file_path: &str) {
     let context = zmq::Context::new();
     let responder = context.socket(zmq::REP).unwrap();
     let publisher = context.socket(zmq::PUB).unwrap();
-    // let (web_request_rx, web_reply_tx) = spawn_socket_in_channel();
+
+    // TCP node
+    let mut tcp_avr_net_node = avr_net::AvrNetState::new(0);
     let tcp_server = Arc::new(ServerNode::new());
     let tcp_server_clone = tcp_server.clone();
     thread::spawn(move || tcp_server_clone.start("0.0.0.0:8000"));
@@ -77,9 +81,17 @@ fn cmd_up(config_file_path: &str) {
 
     let mut msg = zmq::Message::new();
     loop {
+        let now = Instant::now();
+
         // Update the AVRs
-        for (_, dev) in devs.iter_mut() {
-            let _state = dev.step();
+        for _ in 1..1000 {
+            for (_, dev) in devs.iter_mut() {
+                let _state = dev.step();
+
+                if _state.state == avr_simulator::state::AvrState::Sleeping {
+                    break;
+                }
+            }
         }
 
         // Collect messages sent from the devices to the network
@@ -87,11 +99,11 @@ fn cmd_up(config_file_path: &str) {
             let data: Vec<u8> = std::iter::from_fn(|| dev.read_uart('0')).collect();
 
             // HACK!
-            let eot: u8 = 4;
-            if data.contains(&eot) {
-                println!("END OF TRANSMISSION");
-                tcp_server.disconnect_all();
-            }
+            // let eot: u8 = 4;
+            // if data.contains(&eot) {
+            //     println!("END OF TRANSMISSION");
+            //     tcp_server.disconnect_all();
+            // }
 
             if data.len() > 0 {
                 for channel_name in &config.devices[device_name].channels {
@@ -104,11 +116,41 @@ fn cmd_up(config_file_path: &str) {
             }
         }
 
+        // Collect messages sent from the network to the devices
         let client_ids = tcp_server.connected_client_ids();
         for id in client_ids {
             if let Some(buf) = tcp_server.read_data(id) {
-                network.broadcast_on(&"gateway".to_string(), "tcp".to_string(), buf.clone());
-                println!("Received: {}", String::from_utf8_lossy(&buf));
+                // HACK: minimize HTTP
+                let tcp_data = if buf.starts_with("GET ".as_bytes()) {
+                    let buf_str = String::from_utf8_lossy(&buf);
+                    let first_line = buf_str.split("\r\n").next().unwrap().to_string();
+                    first_line.as_bytes().to_vec()
+                } else {
+                    buf
+                };
+
+                let avr_net_message = {
+                    let mut msg_data: Vec<u8> = Vec::new();
+
+                    // Address
+                    msg_data.push(0);
+                    msg_data.push(1); // HACK: hard-coded address
+
+                    // Length
+                    let len: u16 = tcp_data.len() as u16;
+                    msg_data.push((len >> 8) as u8);
+                    msg_data.push(len as u8);
+
+                    // Data
+                    msg_data.extend(tcp_data.iter());
+
+                    msg_data
+                };
+
+                println!("Sending message of size {} to AVR", avr_net_message.len());
+
+                network.broadcast_on(&"gateway".to_string(), "tcp".to_string(), avr_net_message);
+                println!("Received: {}", String::from_utf8_lossy(&tcp_data));
             }
         }
 
@@ -119,15 +161,25 @@ fn cmd_up(config_file_path: &str) {
                     // HACK: need to implement a general purpose peripheral node type
                     // instead of hard-coding this here
                     if device_name == "gateway" {
-                        for id in tcp_server.connected_client_ids() {
-                            tcp_server.send_data(id, &data);
+                        // println!("Received message from TCP: {:?}", data);
+                        for b in data {
+                            if let Some(message_data) = tcp_avr_net_node.rx(b) {
+                                println!("Received message from AVR: {:?}", message_data);
+                                for id in tcp_server.connected_client_ids() {
+                                    tcp_server.send_data(id, &message_data.to_vec());
+                                }
+                            }
                         }
+
                         continue;
                     }
 
                     // Regular message
 
                     let dev = devs.get_mut(&device_name).unwrap();
+
+                    // println!("Delivering \"{}\" to {}", String::from_utf8_lossy(&data), device_name);
+                    println!("Delivering message of size {} to {}", data.len(), device_name);
 
                     for b in data {
                         dev.write_uart('0', b);
@@ -156,7 +208,10 @@ fn cmd_up(config_file_path: &str) {
             }
         }
 
-        // println!("Tick main loop");
+        // let elapsed = now.elapsed();
+        // if elapsed > std::time::Duration::from_millis(10) {
+        //     println!("Elapsed: {:.2?}", elapsed);
+        // }
     }
 }
 

@@ -17,7 +17,13 @@ fn handle_client(mut stream: TcpStream, client_id: u16, clients: ClientMap) {
         let mut buf = [0; 1024];
 
         loop {
-            let len = stream_for_rx.read(&mut buf).unwrap();
+            let len = match stream_for_rx.read(&mut buf) {
+                Ok(len) => Some(len),
+                Err(_) => {
+                    println!("Cannot read data, client {} disconnected", client_id);
+                    break;
+                }
+            }.unwrap();
 
             if len == 0 {
                 break;
@@ -133,6 +139,7 @@ impl ServerNode {
 
                         let data = buffer.clone();
                         buffer.clear();
+                        println!("Read data from client {}: {:?}", client_id, data);
                         return Some(data);
                     }
                     None => None

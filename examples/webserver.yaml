@@ -1,7 +1,12 @@
 devices:
   server:
+    type: avr
     mcu: atmega328p
     firmware: examples/http_hello/build/http_hello.elf
     channels:
       - tcp
-      - trace
+#  tcp:
+#    type: tcp
+#    port: 8000
+#    channels:
+#      - tcp

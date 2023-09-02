@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+[lib]
+name = "mycochip"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mycochip"
+path = "src/main.rs"
+
 [dependencies]
 simavr-ffi = { git = "https://github.com/jmpinit/simavr-ffi.git" }
 libc = "0.2"
@@ -18,3 +26,11 @@ zmq = "0.10.0"
 clap = "*"
 clap_complete = "*"
 prost-build = "0.11.9"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "sim_speed"
+harness = false
+

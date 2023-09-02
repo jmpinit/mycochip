@@ -1,0 +1,35 @@
+devices:
+  main:
+    type: avr
+    mcu: atmega328p
+    firmware: examples/sat_demo/main/build/main.elf
+    channels:
+      - tcp
+      - cam_ctrl
+      - thrust_ctrl
+
+
+
+
+
+
+
+
+
+
+
+
+#  cam:
+#    type: avr
+#    mcu: atmega328p
+#    firmware: examples/sat_demo/cam/build/cam.elf
+#    channels:
+#      - cam_ctrl
+#      - camera
+#  thrust:
+#    type: avr
+#    mcu: atmega328p
+#    firmware: examples/sat_demo/thrust/build/thrust.elf
+#    channels:
+#      - thrust_ctrl
+#      - thruster
