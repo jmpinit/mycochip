@@ -1,85 +1,115 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet};
 
-struct NetworkNode {
-    // The names of the channels this node is connected to
-    channel_names: Vec<String>,
+struct NetworkNode<'a> {
+    name: String,
+    // The names of the nodes this node is connected to
+    peers: HashSet<String>,
+    outgoing: Vec<u8>,
+    receiver: Box<dyn NetworkReceive<'a> + 'a>,
 }
 
-pub struct Network {
-    // The nodes in the network
-    // node name -> node
-    nodes: HashMap<String, NetworkNode>,
-    // The messages queued to send since the last time we delivered messages
-    // node name -> data queue
-    to_send: HashMap<String, VecDeque<u8>>,
+pub trait NetworkReceive<'a>: 'a {
+    fn receive(&mut self, b: u8);
 }
 
-impl Network {
-    pub fn new() -> Self {
+impl<'a> NetworkNode<'a> {
+    pub fn new(name: &str, receiver: impl NetworkReceive<'a>) -> Self {
         Self {
-            nodes: HashMap::new(),
-            to_send: HashMap::new(),
+            name: name.to_string(),
+            peers: HashSet::new(),
+            outgoing: Vec::new(),
+            receiver: Box::new(receiver),
         }
     }
 
-    pub fn add_node(&mut self, name: String, channel_names: Vec<String>) {
-        self.nodes.insert(name.clone(), NetworkNode {
-            channel_names,
-        });
+    pub fn connect(&mut self, peer_name: &str) {
+        if self.name == peer_name {
+            panic!("Cannot connect a node to itself");
+        }
+
+        self.peers.insert(peer_name.to_string());
+    }
+
+    pub fn broadcast(&mut self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend(self.outgoing.iter());
+
+        data
+    }
+}
+
+pub struct Network<'a> {
+    // The nodes in the network
+    // node name -> node
+    nodes: HashMap<String, NetworkNode<'a>>,
+}
+
+impl<'a> Network<'a> {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+        }
+    }
+
+    pub fn create_node(&mut self, name: &str, receiver: impl NetworkReceive<'a>) {
+        let new_node = NetworkNode::new(name, receiver);
+        self.nodes.insert(name.to_string(), new_node);
+    }
+
+    pub fn destroy_node(&mut self, name: &str) {
+        self.nodes.remove(name);
+    }
+
+    // Connect two nodes together bidirectionally
+    pub fn connect(&mut self, node1_name: &str, node2_name: &str) {
+        let node1 = self.nodes.get_mut(node1_name).unwrap();
+        node1.connect(node2_name);
+
+        let node2 = self.nodes.get_mut(node2_name).unwrap();
+        node2.connect(node1_name);
+    }
+
+    pub fn disconnect(&mut self, node1_name: &str, node2_name: &str) {
+        let node1 = self.nodes.get_mut(node1_name).unwrap();
+        node1.peers.retain(|n| n != &node2_name);
+
+        let node2 = self.nodes.get_mut(node2_name).unwrap();
+        node2.peers.retain(|n| n != &node1_name);
+    }
+
+    // Broadcast a message from a node to all of its peers
+    pub fn broadcast_from(&mut self, node_name: &str, data: &Vec<u8>) {
+        let node = self.nodes.get_mut(node_name).unwrap();
+        node.outgoing.extend(data.iter());
+    }
+
+    pub fn deliver_messages(&mut self) {
+        let node_names = self.node_names();
+
+        // Process messages
+        for node_name in &node_names {
+            // TODO: how do I avoid the clones here?
+            let node = self.nodes.get(node_name).unwrap();
+            let peer_names = node.peers.clone();
+            let outgoing = node.outgoing.clone();
+
+            for peer_name in peer_names {
+                let peer = self.nodes.get_mut(peer_name.as_str()).unwrap();
+
+                for b in &outgoing {
+                    peer.receiver.receive(*b);
+                }
+            }
+        }
+
+        // Clear buffers
+        for node_name in &node_names {
+            let node = self.nodes.get_mut(node_name).unwrap();
+            node.outgoing.clear();
+        }
     }
 
     pub fn node_names(&self) -> Vec<String> {
         self.nodes.keys().map(|s| s.clone()).collect()
-    }
-
-    pub fn connect(&mut self, name: String, channel_name: String) {
-        self.nodes
-            .get_mut(&name).unwrap()
-            .channel_names
-            .push(channel_name);
-    }
-
-    pub fn broadcast_on(&mut self, sender_name: &String, channel_name: String, data: Vec<u8>) {
-        // Add the data to the queue for each node that is connected to the channel
-        for (node_name, node) in self.nodes.iter() {
-            if node_name == sender_name {
-                continue;
-            }
-
-            if node.channel_names.contains(&channel_name) {
-                self.to_send
-                    .entry(node_name.clone())
-                    .or_insert_with(|| VecDeque::new())
-                    .extend(data.iter());
-            }
-        }
-    }
-
-    // Broadcast a message from a node to all the other nodes on the same channel
-    pub fn broadcast_from(&mut self, node_name: &String, data: Vec<u8>) {
-        let channel_names: Vec<String> = self.nodes[node_name].channel_names.clone();
-
-        for channel_name in channel_names {
-            self.broadcast_on(node_name, channel_name.clone(), data.clone());
-        }
-    }
-
-    // Read the messages queued for a node and remove them from the queue
-    pub fn messages_for(&mut self, name: &String) -> Option<Vec<u8>> {
-        // Get the data to send to this node
-        match self.to_send.get_mut(name) {
-            Some(data) => {
-                if data.len() == 0 {
-                    return None;
-                }
-
-                let mut data_copy = Vec::new();
-                data_copy.extend(data.iter());
-                data.clear();
-
-                Some(data_copy)
-            },
-            None => None
-        }
     }
 }

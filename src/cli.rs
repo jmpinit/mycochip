@@ -11,8 +11,8 @@ pub fn build_cli() -> Command {
         .subcommand(Command::new("list")
             .about("List running machines"))
         .subcommand(Command::new("rx")
-            .about("Read characters from a specific channel")
-            .arg(Arg::new("channel")
-                .help("Channel name")
+            .about("Read characters sent by a node")
+            .arg(Arg::new("node")
+                .help("Node name")
                 .required(true)))
 }

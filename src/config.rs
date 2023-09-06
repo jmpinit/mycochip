@@ -10,7 +10,7 @@ pub struct MycochipConfig {
 pub struct Device {
     pub mcu: String,
     pub firmware: String,
-    pub channels: Vec<String>,
+    pub peers: Vec<String>,
 }
 
 pub fn load(config_file_path: &str) -> Result<MycochipConfig, io::Error> {

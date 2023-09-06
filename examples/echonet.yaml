@@ -4,11 +4,10 @@ devices:
   transmitter:
     mcu: atmega328p
     firmware: examples/uart_hello_world/build/uart_hello_world.elf
-    channels:
-      - main
+    peers:
+      - echoer
   echoer:
     mcu: atmega328p
     firmware: examples/echo/build/echo.elf
-    channels:
-      - main
-      - trace
+    peers:
+      - transmitter

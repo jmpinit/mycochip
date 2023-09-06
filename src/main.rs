@@ -1,8 +1,13 @@
 use std::time::Instant;
 use std::{io, thread};
+use std::cell::RefCell;
 use std::io::{Write};
 use std::collections::{HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
+use crate::avr_net::AvrNetMessage;
+use crate::config::MycochipConfig;
+use crate::network::NetworkReceive;
 use crate::server_node::ServerNode;
 
 mod cli;
@@ -12,6 +17,11 @@ pub mod avr_simulator;
 mod network;
 mod server_node;
 mod avr_net;
+
+type AvrSimulatorRef = Rc<RefCell<avr_simulator::AvrSimulator>>;
+
+const TCP_GATEWAY_NAME: &str = "tcp_gateway";
+const TCP_GATEWAY_ADDRESS: u16 = 1;
 
 fn cmd_rx(channel_name: &str) {
     let context = zmq::Context::new();
@@ -45,147 +55,137 @@ fn cmd_list() {
     println!("Received: {}", res.as_str().unwrap());
 }
 
-fn cmd_up(config_file_path: &str) {
-    let config = config::load(config_file_path).unwrap();
+struct AvrReceiver {
+    avr: AvrSimulatorRef,
+}
 
-    let mut devs: HashMap<String, avr_simulator::AvrSimulator> = HashMap::new();
-    let mut network = network::Network::new();
-    network.add_node("gateway".to_string(), vec!["tcp".to_string()]);
+impl<'a> NetworkReceive<'a> for AvrReceiver {
+    fn receive(&mut self, b: u8) {
+        self.avr.borrow_mut().write_uart('0', b);
+    }
+}
 
+struct TcpReceiver {
+    // Parses messages from the chips in the network
+    avr_net_node: avr_net::AvrNetState,
+    tcp_server: Arc<ServerNode>,
+}
+
+impl TcpReceiver {
+    fn new(tcp_server: Arc<ServerNode>) -> Self {
+        Self {
+            avr_net_node: avr_net::AvrNetState::new(TCP_GATEWAY_ADDRESS),
+            tcp_server,
+        }
+    }
+}
+
+impl NetworkReceive<'_> for TcpReceiver {
+    fn receive(&mut self, b: u8) {
+        let data = vec![b];
+        for id in self.tcp_server.connected_client_ids() {
+            self.tcp_server.send_data(id, &data);
+        }
+    }
+}
+
+fn init_network(network: &mut network::Network, devs: &mut HashMap<String, AvrSimulatorRef>, config: &MycochipConfig) {
     for (device_name, device) in &config.devices {
-        let avr = avr_simulator::AvrSimulator::new(
+        let avr = Rc::new(RefCell::new(avr_simulator::AvrSimulator::new(
             &device.mcu,
             u32::MAX,
             &device.firmware,
-        );
+        )));
 
-        network.add_node(device_name.clone(), device.channels.clone());
+        let avr_receiver = AvrReceiver { avr: avr.clone() };
+        network.create_node(device_name, avr_receiver);
 
         devs.insert(device_name.clone(), avr);
 
         println!("Started a {0} named {1}", device.mcu, device_name);
     }
 
+    // Connect the network
+    for (device_name, device) in &config.devices {
+        for peer_name in &device.peers {
+            network.connect(device_name, peer_name);
+        }
+    }
+}
+
+fn cmd_up(config_file_path: &str) {
+    let config = config::load(config_file_path).unwrap();
+
+    let mut devs: HashMap<String, AvrSimulatorRef> = HashMap::new();
+    let mut network = network::Network::new();
+
+    // ZMQ sockets
     let context = zmq::Context::new();
     let responder = context.socket(zmq::REP).unwrap();
     let publisher = context.socket(zmq::PUB).unwrap();
-
-    // TCP node
-    let mut tcp_avr_net_node = avr_net::AvrNetState::new(0);
-    let tcp_server = Arc::new(ServerNode::new());
-    let tcp_server_clone = tcp_server.clone();
-    thread::spawn(move || tcp_server_clone.start("0.0.0.0:8000"));
-
     assert!(responder.bind("tcp://*:6723").is_ok());
     assert!(publisher.bind("tcp://*:6724").is_ok());
+
+    // TCP server
+    let tcp_server_for_rx = Arc::new(ServerNode::new());
+    let tcp_server_for_tx = tcp_server_for_rx.clone();
+    {
+        let tcp_server = tcp_server_for_rx.clone();
+        thread::spawn(move || tcp_server.start("0.0.0.0:8000"));
+    }
+
+    let tcp_receiver = TcpReceiver::new(tcp_server_for_tx);
+    network.create_node(TCP_GATEWAY_NAME, tcp_receiver);
+    init_network(&mut network, &mut devs, &config);
 
     let mut msg = zmq::Message::new();
     loop {
         let now = Instant::now();
 
-        // Update the AVRs
-        for _ in 1..1000 {
-            for (_, dev) in devs.iter_mut() {
-                let _state = dev.step();
-
-                if _state.state == avr_simulator::state::AvrState::Sleeping {
-                    break;
-                }
-            }
-        }
-
-        // Collect messages sent from the devices to the network
+        // Collect messages sent from the devices
         for (device_name, dev) in devs.iter_mut() {
-            let data: Vec<u8> = std::iter::from_fn(|| dev.read_uart('0')).collect();
+            let data: Vec<u8> = std::iter::from_fn(|| dev.borrow_mut().read_uart('0')).collect();
 
-            // HACK!
-            // let eot: u8 = 4;
-            // if data.contains(&eot) {
-            //     println!("END OF TRANSMISSION");
-            //     tcp_server.disconnect_all();
-            // }
-
-            if data.len() > 0 {
-                for channel_name in &config.devices[device_name].channels {
-                    publisher.send(channel_name.as_bytes(), zmq::SNDMORE).unwrap();
-                    publisher.send(data.clone(), 0).unwrap();
-                }
-
-                // println!("Broadcasting from {} to {:?}", device_name, config.devices[device_name].channels);
-                network.broadcast_from(device_name, data);
+            if data.len() == 0 {
+                continue;
             }
+
+            network.broadcast_from(device_name, &data);
+
+            // Publish for external listeners
+            publisher.send(device_name.as_bytes(), zmq::SNDMORE).unwrap();
+            publisher.send(data, 0).unwrap();
         }
 
-        // Collect messages sent from the network to the devices
-        let client_ids = tcp_server.connected_client_ids();
+        // Collect messages sent from the world to the devices
+        let client_ids = tcp_server_for_rx.connected_client_ids();
         for id in client_ids {
-            if let Some(buf) = tcp_server.read_data(id) {
-                // HACK: minimize HTTP
-                let tcp_data = if buf.starts_with("GET ".as_bytes()) {
-                    let buf_str = String::from_utf8_lossy(&buf);
-                    let first_line = buf_str.split("\r\n").next().unwrap().to_string();
-                    first_line.as_bytes().to_vec()
-                } else {
-                    buf
-                };
+            if let Some(buf) = tcp_server_for_rx.read_data(id) {
+                let tcp_data = buf;
 
-                let avr_net_message = {
-                    let mut msg_data: Vec<u8> = Vec::new();
-
-                    // Address
-                    msg_data.push(0);
-                    msg_data.push(1); // HACK: hard-coded address
-
-                    // Length
-                    let len: u16 = tcp_data.len() as u16;
-                    msg_data.push((len >> 8) as u8);
-                    msg_data.push(len as u8);
-
-                    // Data
-                    msg_data.extend(tcp_data.iter());
-
-                    msg_data
-                };
+                let avr_net_message = Vec::try_from(AvrNetMessage {
+                    address: 1, // HACK: hard-coded address
+                    data: tcp_data.clone(),
+                }).unwrap();
 
                 println!("Sending message of size {} to AVR", avr_net_message.len());
 
-                network.broadcast_on(&"gateway".to_string(), "tcp".to_string(), avr_net_message);
+                network.broadcast_from(TCP_GATEWAY_NAME, &avr_net_message);
                 println!("Received: {}", String::from_utf8_lossy(&tcp_data));
             }
         }
 
         // Deliver queued messages
-        for device_name in network.node_names() {
-            match network.messages_for(&device_name) {
-                Some(data) => {
-                    // HACK: need to implement a general purpose peripheral node type
-                    // instead of hard-coding this here
-                    if device_name == "gateway" {
-                        // println!("Received message from TCP: {:?}", data);
-                        for b in data {
-                            if let Some(message_data) = tcp_avr_net_node.rx(b) {
-                                println!("Received message from AVR: {:?}", message_data);
-                                for id in tcp_server.connected_client_ids() {
-                                    tcp_server.send_data(id, &message_data.to_vec());
-                                }
-                            }
-                        }
+        network.deliver_messages();
 
-                        continue;
-                    }
+        // Update the AVRs
+        for _ in 1..1000 {
+            for (_, dev) in devs.iter() {
+                let _state = dev.borrow_mut().step();
 
-                    // Regular message
-
-                    let dev = devs.get_mut(&device_name).unwrap();
-
-                    // println!("Delivering \"{}\" to {}", String::from_utf8_lossy(&data), device_name);
-                    println!("Delivering message of size {} to {}", data.len(), device_name);
-
-                    for b in data {
-                        dev.write_uart('0', b);
-                    }
+                if _state.state == avr_simulator::state::AvrState::Sleeping {
+                    break;
                 }
-                None => {}
             }
         }
 
@@ -229,10 +229,10 @@ fn main() {
         },
         Some(("list", _)) => cmd_list(),
         Some(("rx", args)) => {
-            let channel_name = args.get_one::<String>("channel")
-                .expect("Channel name is required");
+            let peer_name = args.get_one::<String>("node")
+                .expect("Node name is required");
 
-            cmd_rx(channel_name);
+            cmd_rx(peer_name);
         },
         _ => println!("No subcommand"),
     }

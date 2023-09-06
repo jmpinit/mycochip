@@ -27,10 +27,10 @@ void USART_Transmit(char data) {
 
 void send_http_response() {
     char response[] = "HTTP/1.1 200 OK\r\n"
-                      "Content-Length: 12\r\n"
+                      "Content-Length: 18\r\n"
                       "Content-Type: text/plain; charset=utf-8\r\n"
                       "\r\n"
-                      "Hello World!";
+                      "Hello from an AVR!";
     for (int i = 0; response[i]; i++) {
         USART_Transmit(response[i]);
     }
