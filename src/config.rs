@@ -10,6 +10,8 @@ pub struct MycochipConfig {
 pub struct Device {
     pub mcu: String,
     pub firmware: String,
+
+    #[serde(default = "Vec::new")]
     pub peers: Vec<String>,
 }
 
