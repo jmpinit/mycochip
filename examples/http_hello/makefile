@@ -2,7 +2,7 @@ CC=avr-gcc
 OBJCOPY=avr-objcopy
 MCU=atmega328p
 CFLAGS=-Os -mmcu=$(MCU) -DF_CPU=1000000
-TARGET=http_hello
+TARGET=main
 
 # Build Rules
 all: build/$(TARGET).hex
