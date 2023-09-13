@@ -55,6 +55,21 @@ fn cmd_list() {
     println!("Received: {}", res.as_str().unwrap());
 }
 
+fn cmd_pin(machine_name: &str, port: &str, pin_index: &u8, state: Option<&bool>) {
+    let req = comms::request::Request {
+        command_type: comms::request::CommandType::Io.into(),
+        args: Some(comms::request::request::Args::IoArgs(comms::request::IoArgs {
+            machine_id: machine_name.to_string(),
+            port: port.to_string(),
+            pin_index: *pin_index as u32,
+        })),
+    };
+
+    let res = comms::send_request(&req).unwrap();
+
+    println!("Received: {}", res.as_str().unwrap());
+}
+
 struct AvrReceiver {
     avr: AvrSimulatorRef,
 }
@@ -114,6 +129,13 @@ fn init_network(network: &mut network::Network, devs: &mut HashMap<String, AvrSi
 }
 
 fn cmd_up(config_file_path: &str) {
+    let config_or_err = config::load(config_file_path);
+
+    if config_or_err.is_err() {
+        println!("Error: {}", config_or_err.err().unwrap());
+        return;
+    }
+
     let config = config::load(config_file_path).unwrap();
 
     let mut devs: HashMap<String, AvrSimulatorRef> = HashMap::new();
@@ -202,6 +224,21 @@ fn cmd_up(config_file_path: &str) {
                 Some(comms::request::CommandType::Logs) => {
                     responder.send("hello from the logs", 0).unwrap();
                 },
+                Some(comms::request::CommandType::Io) => {
+                    match req.args {
+                        Some(comms::request::request::Args::IoArgs(ref io_args)) => {
+                            let port_char: char = io_args.port.chars().next().unwrap();
+                            let pin_state = devs.get(&io_args.machine_id)
+                                .unwrap().borrow_mut()
+                                .get_digital_pin(port_char, io_args.pin_index as u8);
+                            let pin_msg = format!("{}", pin_state);
+                            responder.send(pin_msg.as_str(), 0).unwrap();
+                        },
+                        _ => {
+                            responder.send("Error!", 0).unwrap();
+                        },
+                    }
+                }
                 _ => {
                     responder.send("Error!", 0).unwrap();
                 },
@@ -228,11 +265,22 @@ fn main() {
             cmd_up(config_file_path);
         },
         Some(("list", _)) => cmd_list(),
+        Some(("pin", args)) => {
+            let node_name = args.get_one::<String>("node")
+                .expect("Node name is required");
+            let port = args.get_one::<String>("port")
+                .expect("Port name is required");
+            let pin_index = args.get_one::<u8>("pin")
+                .expect("Pin number is required");
+            let state = args.get_one::<bool>("state");
+
+            cmd_pin(node_name, port, pin_index, state);
+        },
         Some(("rx", args)) => {
-            let peer_name = args.get_one::<String>("node")
+            let node_name = args.get_one::<String>("node")
                 .expect("Node name is required");
 
-            cmd_rx(peer_name);
+            cmd_rx(node_name);
         },
         _ => println!("No subcommand"),
     }

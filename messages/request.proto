@@ -5,6 +5,7 @@ package mycochip.request;
 enum CommandType {
     LIST = 0;
     LOGS = 1;
+    IO = 3;
     // ...
 }
 
@@ -16,12 +17,19 @@ message LogsArgs {
     string machine_id = 1;
 }
 
+message IOArgs {
+    string machine_id = 1;
+    string port = 2;
+    uint32 pin_index = 3;
+}
+
 message Request {
     CommandType command_type = 1;
 
     oneof args {
         ListArgs list_args = 2;
         LogsArgs logs_args = 3;
+        IOArgs io_args = 4;
         // ...
     }
 }
