@@ -2,8 +2,12 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::thread;
+use std::{mem, thread};
+
+use nix::sys::socket::setsockopt;
+use nix::sys::socket::sockopt::ReusePort;
 
 type ClientMap = Arc<Mutex<HashMap<u16, Client>>>;
 
@@ -92,20 +96,30 @@ impl Client {
 
 pub struct ServerNode {
     clients: ClientMap,
+    address: String,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl ServerNode {
-    pub fn new() -> Self {
+    pub fn new(address: &str) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
+            address: address.to_owned(),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn start(&self, address: &str) {
-        let listener = TcpListener::bind(address).unwrap();
+    pub fn start(&self) {
+        let listener = TcpListener::bind(&self.address).unwrap();
+        setsockopt(&listener, ReusePort, &true).unwrap();
+
         let mut next_client_id: u16 = 0;
 
         for stream in listener.incoming() {
+            if self.shutdown_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
             match stream {
                 Ok(stream) => {
                     let client_data = self.clients.clone();
@@ -119,6 +133,13 @@ impl ServerNode {
                 }
             }
         }
+
+        println!("Server stopped");
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown_flag.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(&self.address);
     }
 
     pub fn connected_client_ids(&self) -> Vec<u16> {

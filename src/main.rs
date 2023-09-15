@@ -144,16 +144,28 @@ fn cmd_up(config_file_path: &str) {
     // ZMQ sockets
     let context = zmq::Context::new();
     let responder = context.socket(zmq::REP).unwrap();
+    responder.set_linger(0).unwrap();
     let publisher = context.socket(zmq::PUB).unwrap();
     assert!(responder.bind("tcp://*:6723").is_ok());
     assert!(publisher.bind("tcp://*:6724").is_ok());
+    publisher.set_linger(0).unwrap();
 
     // TCP server
-    let tcp_server_for_rx = Arc::new(ServerNode::new());
+    let tcp_server_for_rx = Arc::new(ServerNode::new("0.0.0.0:7001"));
     let tcp_server_for_tx = tcp_server_for_rx.clone();
     {
         let tcp_server = tcp_server_for_rx.clone();
-        thread::spawn(move || tcp_server.start("0.0.0.0:8000"));
+        thread::spawn(move || tcp_server.start());
+    }
+
+    {
+        let tcp_server = tcp_server_for_rx.clone();
+        ctrlc::set_handler(move || {
+            println!("Shutting down");
+            tcp_server.shutdown();
+            std::process::exit(0);
+        })
+        .expect("Error setting Ctrl-C handler");
     }
 
     let tcp_receiver = TcpReceiver::new(tcp_server_for_tx);
