@@ -1,5 +1,5 @@
 devices:
-  blinker:
+  main:
     mcu: atmega328p
     firmware: build/blink.elf
 

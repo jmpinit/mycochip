@@ -3,6 +3,7 @@ use std::{io, thread};
 use std::cell::RefCell;
 use std::io::{Write};
 use std::collections::{HashMap};
+use std::fmt::format;
 use std::rc::Rc;
 use std::sync::Arc;
 use crate::avr_net::AvrNetMessage;
@@ -20,6 +21,8 @@ mod avr_net;
 
 type AvrSimulatorRef = Rc<RefCell<avr_simulator::AvrSimulator>>;
 
+const REQUEST_PORT: i32 = 6711;
+const DEVICE_EVENT_PORT: i32 = 6712;
 const TCP_GATEWAY_NAME: &str = "tcp_gateway";
 const TCP_GATEWAY_ADDRESS: u16 = 1;
 
@@ -28,7 +31,8 @@ fn cmd_rx(channel_name: &str) {
     let subscriber = context.socket(zmq::SUB).unwrap();
     subscriber.set_subscribe(channel_name.as_bytes()).unwrap();
 
-    assert!(subscriber.connect("tcp://localhost:6724").is_ok());
+    let listen_address = format!("tcp://localhost:{}", DEVICE_EVENT_PORT);
+    assert!(subscriber.connect(listen_address.as_str()).is_ok());
 
     loop {
         let mut msg = zmq::Message::new();
@@ -128,6 +132,62 @@ fn init_network(network: &mut network::Network, devs: &mut HashMap<String, AvrSi
     }
 }
 
+fn publish_bus_data(node_name: &str, publisher: &zmq::Socket, data: &Vec<u8>) -> Result<(), zmq::Error> {
+    let topic = format!("{}/bus", node_name);
+    publisher.send(topic.as_bytes(), zmq::SNDMORE)?;
+    publisher.send(data, 0)
+}
+
+fn publish_pin_event(node_name: &str, publisher: &zmq::Socket, port: char, pin_index: u8, state: bool) -> Result<(), zmq::Error> {
+    let topic = format!("{}/pin/{}/{}", node_name, port, pin_index);
+    publisher.send(topic.as_bytes(), zmq::SNDMORE)?;
+    publisher.send( (state as u8).to_string().as_bytes(), 0)
+}
+
+struct PinTracker {
+    last_port_values: HashMap<char, u8>,
+}
+
+impl PinTracker {
+    fn new() -> Self {
+        Self {
+            // TODO: allow for parts with different number of ports
+            last_port_values: HashMap::from([
+                ('B', 0),
+                ('C', 0),
+                ('D', 0),
+            ]),
+        }
+    }
+
+    fn update(&mut self, avr: &mut avr_simulator::AvrSimulator) -> Vec<(char, u8, bool)> {
+        let mut pin_events: Vec<(char, u8, bool)> = vec![];
+        let mut new_values: HashMap<char, u8> = HashMap::new();
+
+        for (port_name, last_port_value) in self.last_port_values.iter_mut() {
+            // TODO: retrieve the whole port at once
+            let mut port_value = 0;
+
+            for bit_idx in 0..8 {
+                let last_state = ((*last_port_value >> bit_idx) & 1) > 0;
+                let current_state = avr.get_digital_pin(*port_name, bit_idx);
+
+                if last_state != current_state {
+                    pin_events.push((*port_name, bit_idx, current_state));
+                }
+
+                port_value |= (current_state as u8) << bit_idx;
+            }
+
+            new_values.insert(*port_name, port_value);
+        }
+
+        self.last_port_values = new_values;
+
+        pin_events
+    }
+}
+
 fn cmd_up(config_file_path: &str) {
     let config_or_err = config::load(config_file_path);
 
@@ -139,6 +199,7 @@ fn cmd_up(config_file_path: &str) {
     let config = config::load(config_file_path).unwrap();
 
     let mut devs: HashMap<String, AvrSimulatorRef> = HashMap::new();
+    let mut pin_trackers: HashMap<String, PinTracker> = HashMap::new();
     let mut network = network::Network::new();
 
     // ZMQ sockets
@@ -146,9 +207,15 @@ fn cmd_up(config_file_path: &str) {
     let responder = context.socket(zmq::REP).unwrap();
     responder.set_linger(0).unwrap();
     let publisher = context.socket(zmq::PUB).unwrap();
-    assert!(responder.bind("tcp://*:6723").is_ok());
-    assert!(publisher.bind("tcp://*:6724").is_ok());
     publisher.set_linger(0).unwrap();
+
+    {
+        let responder_address = format!("tcp://*:{}", REQUEST_PORT);
+        assert!(responder.bind(responder_address.as_str()).is_ok());
+        let pub_address = format!("tcp://*:{}", DEVICE_EVENT_PORT);
+        println!("Publishing on {}", pub_address);
+        assert!(publisher.bind(pub_address.as_str()).is_ok());
+    }
 
     // TCP server
     let tcp_server_for_rx = Arc::new(ServerNode::new("0.0.0.0:7001"));
@@ -172,6 +239,10 @@ fn cmd_up(config_file_path: &str) {
     network.create_node(TCP_GATEWAY_NAME, tcp_receiver);
     init_network(&mut network, &mut devs, &config);
 
+    for (device_name, _) in &devs {
+        pin_trackers.insert(device_name.clone(), PinTracker::new());
+    }
+
     let mut msg = zmq::Message::new();
     loop {
         let now = Instant::now();
@@ -187,8 +258,7 @@ fn cmd_up(config_file_path: &str) {
             network.broadcast_from(device_name, &data);
 
             // Publish for external listeners
-            publisher.send(device_name.as_bytes(), zmq::SNDMORE).unwrap();
-            publisher.send(data, 0).unwrap();
+            publish_bus_data(device_name, &publisher, &data).unwrap();
         }
 
         // Collect messages sent from the world to the devices
@@ -220,6 +290,17 @@ fn cmd_up(config_file_path: &str) {
                 if _state.state == avr_simulator::state::AvrState::Sleeping {
                     break;
                 }
+            }
+        }
+
+        // Broadcast pin events
+        for (node_name, dev) in devs.iter_mut() {
+            let sim = &mut *dev.borrow_mut();
+            let pin_tracker = pin_trackers.get_mut(node_name).unwrap();
+            let pin_events = pin_tracker.update(sim);
+
+            for (port, pin_index, state) in pin_events {
+                publish_pin_event(node_name, &publisher, port, pin_index, state).unwrap();
             }
         }
 
