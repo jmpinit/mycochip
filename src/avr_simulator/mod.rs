@@ -33,7 +33,7 @@ pub struct AvrSimulator {
 }
 
 impl AvrSimulator {
-    pub fn new(mcu: &str, frequency: u32, firmware: impl AsRef<Path>) -> Self {
+    pub fn new(mcu: &str, frequency: u32, firmware: impl AsRef<Path>, eeprom: Option<&[u8]>) -> Self {
         logging::init();
 
         let mut avr = Avr::new(mcu, frequency);
@@ -41,7 +41,14 @@ impl AvrSimulator {
         // Safety: `avr` lives as long as `adc`
         let adc = unsafe { Adc::new(&mut avr) };
 
-        Firmware::new().load_elf(firmware).flash_to(&mut avr);
+        if eeprom.is_some() {
+            Firmware::new()
+                .load_elf(firmware)
+                .write_eeprom(eeprom.unwrap())
+                .flash_to(&mut avr);
+        } else {
+            Firmware::new().load_elf(firmware).flash_to(&mut avr);
+        }
 
         // Initialize SPIs.
         //

@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -11,6 +11,7 @@ pub struct MycochipConfig {
 pub struct Device {
     pub mcu: String,
     pub firmware: String,
+    pub eeprom: Option<Vec<u8>>,
 
     #[serde(default = "Vec::new")]
     pub peers: Vec<String>,

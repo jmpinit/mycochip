@@ -47,6 +47,28 @@ impl Firmware {
         self
     }
 
+    pub fn write_eeprom(self, data: &[u8]) -> Firmware {
+        const EESIZE: usize = 1024;
+
+        if data.len() > EESIZE {
+            panic!("EEPROM data too large ({} > {})", data.len(), EESIZE);
+        }
+
+        unsafe {
+            let fw = &mut *self.ptr.as_ptr();
+
+            // Allocate 1024 bytes for the eeprom
+            let layout = alloc::Layout::from_size_align(1024, std::mem::align_of::<u8>()).unwrap();
+            fw.eeprom = alloc::alloc_zeroed(layout);
+            fw.eesize = EESIZE as u32;
+
+            // Copy the data to the eeprom
+            std::ptr::copy_nonoverlapping(data.as_ptr(), fw.eeprom, data.len());
+        }
+
+        self
+    }
+
     pub fn flash_to(self, avr: &mut Avr) {
         avr.load_firmware(self.ptr);
     }

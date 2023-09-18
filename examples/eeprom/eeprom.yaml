@@ -1,0 +1,6 @@
+devices:
+  main:
+    mcu: atmega328p
+    firmware: build/main.elf
+    eeprom:
+      - 0x01

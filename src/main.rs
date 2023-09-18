@@ -110,10 +110,16 @@ impl NetworkReceive<'_> for TcpReceiver {
 
 fn init_network(network: &mut network::Network, devs: &mut HashMap<String, AvrSimulatorRef>, config: &MycochipConfig) {
     for (device_name, device) in &config.devices {
+        let eeprom = match &device.eeprom {
+            Some(eeprom) => Some(eeprom.as_slice()),
+            None => None,
+        };
+
         let avr = Rc::new(RefCell::new(avr_simulator::AvrSimulator::new(
             &device.mcu,
             u32::MAX,
             &device.firmware,
+            eeprom,
         )));
 
         let avr_receiver = AvrReceiver { avr: avr.clone() };
